@@ -1,0 +1,160 @@
+#!/usr/bin/env python3
+import os
+import shlex
+import shutil
+import argparse
+import subprocess
+import random
+import string
+import jinja2
+from datetime import datetime
+import tempfile
+import sys
+
+data_path = os.path.join(sys.prefix, 'share', 'temphost')
+
+def run_cmd(cmd):
+    print(cmd)
+    result = subprocess.run(shlex.split(cmd), capture_output=True, encoding='utf-8')
+    if result.returncode != 0:
+        print(result.stderr)
+        raise CalledProcessError
+    return result
+
+def sizeof_fmt(num, suffix='B'):
+    for unit in ['','Ki','Mi','Gi','Ti','Pi','Ei','Zi']:
+        if abs(num) < 1024.0:
+            return "%3.1f%s%s" % (num, unit, suffix)
+        num /= 1024.0
+    return "%.1f%s%s" % (num, 'Yi', suffix)
+
+def gen_template(target_dir, static_ref=None, relpath = '', rootname='temphost', baseurl='', expiry_str=None):
+    files_dict = []
+    for filename in os.listdir(target_dir):
+        filepath = os.path.join(target_dir, filename)
+        mtime = os.path.getmtime(filepath)
+        mdate = datetime.fromtimestamp(mtime).strftime('%Y-%m-%d %H:%M:%S')
+        human_size = sizeof_fmt(os.path.getsize(filepath))
+        files_dict.append({'name': filename, 'modtime': mdate, 'size': human_size})
+        if os.path.isdir(filename):
+            gen_template(target_dir=os.path.join(target_dir, filename), 
+                    static_ref=static_ref,
+                    relpath=os.path.join(relpath, filename), 
+                    rootname=rootname,
+                    baseurl=baseurl,
+                    expiry_str=expiry_str)
+        index_name = os.path.join(rootname, relpath)
+    template = open(os.path.join(data_path, 'index.html.template'), 'r').read()
+    with open(os.path.join(target_dir, 'index.html'), 'w') as index:
+        index.write(jinja2.Template(template).render(
+                static_ref=static_ref,
+                index_name=index_name, 
+                files_dict=files_dict,
+                expiry_str=expiry_str,
+                url_full='/'.join([baseurl, relpath])))
+
+def main():
+
+    deps = ['ssh', 'scp']
+    for dep in deps:
+        if not shutil.which(dep):
+            print(f'Missing dependency: {dep}')
+
+    parser = argparse.ArgumentParser()
+
+    parser.add_argument('-H', '--hostname', help='Server to send files to', required=True)
+    parser.add_argument('-r', '--recurse', action='store_true', help='Recurse into directories')
+    parser.add_argument('files', nargs='+', help='List of files to send over')
+    parser.add_argument('-c', '--config',  help='Host config file')
+    parser.add_argument('-s', '--slug',  help='Host config file')
+    parser.add_argument('-t', '--ttl',  help='Time for the files to live in days', type=int, default=None)
+    parser.add_argument('-S', '--use-custom-style',  action='store_true', help='Use custom CSS file', default=False)
+
+    args = parser.parse_args()
+
+    has_dirs = False
+
+    for item in args.files:
+        assert(os.path.exists(item))
+        if os.path.isdir(item):
+            has_dirs = True
+
+    recurse_str = ''
+    if has_dirs:
+        if args.recurse:
+            recurse_str = '-r'
+        else:
+            raise RuntimeError('To recursively send over dirs, run with "-r"')
+
+    config = {
+            'hostname' : 'localhost',
+            'server_protocol' : 'https',
+            'server_domain' : 'superluserdo.xyz',
+            'server_fs_root' : '/srv/www/html',
+            'listing_prefix' : 'tmp',
+            'slug_len' : 16,
+            }
+
+    if args.config:
+        import yaml
+        config.update(yaml.safe_load(open(args.config, 'r').read()))
+
+    for (key, val) in vars(args).items():
+        if val is not None:
+            config[key] = val
+
+    if 'slug' not in config:
+        config['slug'] = ''.join(random.SystemRandom().choice(string.ascii_letters + string.digits) for _ in range(config['slug_len']))
+
+    server_fs_listing_prefix = os.path.join(config['server_fs_root'], config['listing_prefix'])
+
+    dst_dir = os.path.join(server_fs_listing_prefix, config['slug'])
+
+    filelist = " ".join(['"'+f+'"' for f in args.files])
+
+    # Make temp dir:
+    with tempfile.TemporaryDirectory() as tmpdirname:
+        print('created temporary directory', tmpdirname)
+        os.chmod(tmpdirname, 0o755)
+        tmppath = os.path.join(tmpdirname, '') #Add trailing slash
+        rsync_local_cmd = f'rsync -raP {recurse_str} {filelist} {tmppath}'
+        rsync_local_result  = subprocess.run(shlex.split(rsync_local_cmd))
+
+        baseurl = config['server_protocol']+'://'+config['server_domain']+'/'+config['listing_prefix']+'/'+config['slug']
+
+        if 'ttl' in config:
+            from datetime import datetime, timedelta
+            now = datetime.now()
+            expiry = now + timedelta(days=config['ttl'],minutes=5)
+            expiry_str = expiry.strftime('%H:%M %Y-%m-%d')
+        else:
+            expiry_str = None
+
+
+        if config['use_custom_style']:
+            static_ref='/'.join(['',config['listing_prefix'],'static'])
+        else:
+            static_ref = None
+
+        gen_template(
+                tmpdirname, 
+                static_ref=static_ref,
+                rootname=config['slug'], 
+                baseurl=baseurl, 
+                expiry_str=expiry_str)
+
+        mkdir_cmd = f'ssh {config["hostname"]} mkdir -p {dst_dir}'
+        mkdir_result = run_cmd(mkdir_cmd)
+
+        rsync_remote_cmd = f'rsync -raP {tmppath} "{config["hostname"]}:{dst_dir}"'
+        print(rsync_remote_cmd)
+        rsync_remote_result  = subprocess.run(shlex.split(rsync_remote_cmd))
+
+        if expiry_str:
+            timeout_cmd = f'ssh {config["hostname"]} at {expiry_str}'
+            timeout_result = subprocess.run(shlex.split(timeout_cmd), input=f'rm -r "{dst_dir}"', encoding='utf-8')
+    print(dst_dir)
+    print(baseurl)
+
+if __name__ == '__main__':
+    main()
