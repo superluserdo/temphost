@@ -126,7 +126,7 @@ def main():
             raise RuntimeError('To recursively send over dirs, run with "-r"')
 
     dry_run_str = ''
-    if 'dry_run' in config:
+    if config['dry_run']:
         dry_run_str = '-n'
 
     # Autogenerate slug if not specified
