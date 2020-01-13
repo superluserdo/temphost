@@ -33,7 +33,7 @@ temphost copies the file `test` and dir `testdir` to the server at `https://supe
 
 ![screenshot](site-screenshot.png)
 
-With customisable slug and css.
+With recursive auto-generated directory listing index.html files with customisable css.
 
 ----
 
