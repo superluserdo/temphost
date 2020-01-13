@@ -8,8 +8,10 @@ import random
 import string
 import jinja2
 from datetime import datetime
+from pathlib import Path
 import tempfile
 import sys
+import yaml
 
 data_path = os.path.join(sys.prefix, 'share', 'temphost')
 
@@ -55,23 +57,56 @@ def gen_template(target_dir, static_ref=None, relpath = '', rootname='temphost',
 
 def main():
 
+    config_home = os.getenv('XDG_CONFIG_HOME')
+    if not config_home:
+        config_home = os.path.join(os.getenv('HOME'), '.config')
+    config_default = os.path.join(config_home, 'temphost', 'config.yaml')
+
     deps = ['ssh', 'scp']
     for dep in deps:
         if not shutil.which(dep):
             print(f'Missing dependency: {dep}')
 
+    # Parse args:
     parser = argparse.ArgumentParser()
 
-    parser.add_argument('-H', '--hostname', help='Server to send files to', required=True)
-    parser.add_argument('-r', '--recurse', action='store_true', help='Recurse into directories')
+    parser.add_argument('-H', '--hostname', help='Server to send files to')
+    parser.add_argument('-r', '--recurse', action='store_true', help='Recurse into directories (required if sending over directory names)')
     parser.add_argument('files', nargs='+', help='List of files to send over')
-    parser.add_argument('-c', '--config',  help='Host config file')
-    parser.add_argument('-s', '--slug',  help='Host config file')
+    parser.add_argument('-c', '--config',  help='Host config file', default=config_default)
+    parser.add_argument('-s', '--slug',  help='URL slug to deploy to (default is a random alphanumeric string)')
     parser.add_argument('-t', '--ttl',  help='Time for the files to live in days', type=int, default=None)
     parser.add_argument('-S', '--use-custom-style',  action='store_true', help='Use custom CSS file', default=False)
+    parser.add_argument('-n', '--dry-run',  action='store_true', help='Try without transferring files', default=False)
 
     args = parser.parse_args()
 
+    # Populate config
+    # default values overwritten by config file values, overwritten by cmdline args
+    config = { # Safe defaults
+            'server_protocol' : 'https',
+            'slug_len' : 16,
+            }
+
+    if os.path.isfile(args.config):
+        config.update(yaml.safe_load(open(args.config, 'r').read()))
+    else:
+        print(f'No config file found in {args.config}')
+
+    for (key, val) in vars(args).items():
+        if val is not None:
+            config[key] = val
+
+    missing_options = []
+    for option in ['hostname', 'server_domain', 'server_fs_root', 'listing_prefix', 'slug_len', 'server_protocol']:
+        if option not in config:
+            missing_options.append(option)
+
+    if len(missing_options) > 0:
+        raise RuntimeError(f'Missing required option(s): {missing_options}.\n'
+                f'Add these options either in the config file in {config_default} or as command line options')
+
+    # Check if recurse flag is needed:
     has_dirs = False
 
     for item in args.files:
@@ -86,23 +121,11 @@ def main():
         else:
             raise RuntimeError('To recursively send over dirs, run with "-r"')
 
-    config = {
-            'hostname' : 'localhost',
-            'server_protocol' : 'https',
-            'server_domain' : 'superluserdo.xyz',
-            'server_fs_root' : '/srv/www/html',
-            'listing_prefix' : 'tmp',
-            'slug_len' : 16,
-            }
+    dry_run_str = ''
+    if 'dry_run' in config:
+        dry_run_str = '-n'
 
-    if args.config:
-        import yaml
-        config.update(yaml.safe_load(open(args.config, 'r').read()))
-
-    for (key, val) in vars(args).items():
-        if val is not None:
-            config[key] = val
-
+    # Autogenerate slug if not specified
     if 'slug' not in config:
         config['slug'] = ''.join(random.SystemRandom().choice(string.ascii_letters + string.digits) for _ in range(config['slug_len']))
 
@@ -118,11 +141,12 @@ def main():
         os.chmod(tmpdirname, 0o755)
         tmppath = os.path.join(tmpdirname, '') #Add trailing slash
         rsync_local_cmd = f'rsync -raP {recurse_str} {filelist} {tmppath}'
-        rsync_local_result  = subprocess.run(shlex.split(rsync_local_cmd))
+        rsync_local_result  = run_cmd(rsync_local_cmd)
 
         baseurl = config['server_protocol']+'://'+config['server_domain']+'/'+config['listing_prefix']+'/'+config['slug']
 
         if 'ttl' in config:
+            # Create expiry date
             from datetime import datetime, timedelta
             now = datetime.now()
             expiry = now + timedelta(days=config['ttl'],minutes=5)
@@ -132,10 +156,12 @@ def main():
 
 
         if config['use_custom_style']:
+            # Use custom css file, do not embed default styles
             static_ref='/'.join(['',config['listing_prefix'],'static'])
         else:
             static_ref = None
 
+        # Create HTML:
         gen_template(
                 tmpdirname, 
                 static_ref=static_ref,
@@ -143,16 +169,21 @@ def main():
                 baseurl=baseurl, 
                 expiry_str=expiry_str)
 
-        mkdir_cmd = f'ssh {config["hostname"]} mkdir -p {dst_dir}'
-        mkdir_result = run_cmd(mkdir_cmd)
+        # Create dir on server and transfer files over:
 
-        rsync_remote_cmd = f'rsync -raP {tmppath} "{config["hostname"]}:{dst_dir}"'
+        if 'dry-run' not in config:
+            mkdir_cmd = f'ssh {config["hostname"]} mkdir -p {dst_dir}'
+            mkdir_result = run_cmd(mkdir_cmd)
+
+        rsync_remote_cmd = f'rsync {dry_run_str} -raP {tmppath} "{config["hostname"]}:{dst_dir}"'
         print(rsync_remote_cmd)
         rsync_remote_result  = subprocess.run(shlex.split(rsync_remote_cmd))
 
         if expiry_str:
             timeout_cmd = f'ssh {config["hostname"]} at {expiry_str}'
             timeout_result = subprocess.run(shlex.split(timeout_cmd), input=f'rm -r "{dst_dir}"', encoding='utf-8')
+
+    # Finally, output link to stdout:
     print(dst_dir)
     print(baseurl)
 
