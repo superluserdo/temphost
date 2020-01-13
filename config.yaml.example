@@ -1,0 +1,6 @@
+#hostname : 'localhost'
+#server_protocol : 'https'
+#server_domain : 'example.com'
+#server_fs_root : '/srv/www'
+#listing_prefix : 'temphost'
+#slug_len : 16
