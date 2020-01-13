@@ -79,6 +79,10 @@ def main():
     parser.add_argument('-S', '--use-custom-style',  action='store_true', help='Use custom CSS file', default=False)
     parser.add_argument('-n', '--dry-run',  action='store_true', help='Try without transferring files', default=False)
 
+    parser.add_argument('--server-domain',  help='Domain of the server (without http prefix), eg example.com')
+    parser.add_argument('--server-fs-root',  help='The server root directory, ie the one corresponding to yourdomain.com/')
+    parser.add_argument('--listing-prefix',  help='The prefix of all temphost-hosted files on the server, eg "temphost" (would host at example.com/temphost)')
+
     args = parser.parse_args()
 
     # Populate config
