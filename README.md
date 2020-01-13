@@ -35,6 +35,8 @@ temphost copies the file `test` and dir `testdir` to the server at `https://supe
 
 With recursive auto-generated directory listing index.html files with customisable css.
 
+In this case, the files are indicated to expire from the server in 9 days, and will be deleted after that time.
+
 ----
 
 ## Installation
