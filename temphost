@@ -38,19 +38,19 @@ def gen_template(target_dir, static_ref=None, relpath = '', rootname='temphost',
         mdate = datetime.fromtimestamp(mtime).strftime('%Y-%m-%d %H:%M:%S')
         human_size = sizeof_fmt(os.path.getsize(filepath))
         files_dict.append({'name': filename, 'modtime': mdate, 'size': human_size})
-        if os.path.isdir(filename):
-            gen_template(target_dir=os.path.join(target_dir, filename), 
+        if os.path.isdir(filepath):
+            gen_template(target_dir=filepath,
                     static_ref=static_ref,
-                    relpath=os.path.join(relpath, filename), 
+                    relpath=os.path.join(relpath, filename),
                     rootname=rootname,
                     baseurl=baseurl,
                     expiry_str=expiry_str)
-        index_name = os.path.join(rootname, relpath)
+    index_name = os.path.join(rootname, relpath)
     template = open(os.path.join(data_path, 'index.html.template'), 'r').read()
     with open(os.path.join(target_dir, 'index.html'), 'w') as index:
         index.write(jinja2.Template(template).render(
                 static_ref=static_ref,
-                index_name=index_name, 
+                index_name=index_name,
                 files_dict=files_dict,
                 expiry_str=expiry_str,
                 url_full='/'.join([baseurl, relpath])))
@@ -167,10 +167,10 @@ def main():
 
         # Create HTML:
         gen_template(
-                tmpdirname, 
+                tmpdirname,
                 static_ref=static_ref,
-                rootname=config['slug'], 
-                baseurl=baseurl, 
+                rootname=config['slug'],
+                baseurl=baseurl,
                 expiry_str=expiry_str)
 
         # Create dir on server and transfer files over:
