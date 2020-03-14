@@ -15,9 +15,11 @@ import yaml
 
 data_path = os.path.join(sys.prefix, 'share', 'temphost')
 
-def run_cmd(cmd):
-    print(cmd)
+def run_cmd(cmd, verbose):
     result = subprocess.run(shlex.split(cmd), capture_output=True, encoding='utf-8')
+    if verbose:
+        print(cmd)
+        print(result.stdout)
     if result.returncode != 0:
         print(result.stderr)
         raise CalledProcessError
@@ -30,7 +32,9 @@ def sizeof_fmt(num, suffix='B'):
         num /= 1024.0
     return "%.1f%s%s" % (num, 'Yi', suffix)
 
-def gen_template(target_dir, static_ref=None, relpath = '', rootname='temphost', baseurl='', expiry_str=None):
+def gen_template(target_dir, static_ref=None, relpath = '', rootname='temphost', baseurl='', expiry_str=None, verbose=False):
+    if verbose:
+        print(f'Generating template for directory {target_dir}')
     files_dict = []
     for filename in os.listdir(target_dir):
         filepath = os.path.join(target_dir, filename)
@@ -44,7 +48,8 @@ def gen_template(target_dir, static_ref=None, relpath = '', rootname='temphost',
                     relpath=os.path.join(relpath, filename),
                     rootname=rootname,
                     baseurl=baseurl,
-                    expiry_str=expiry_str)
+                    expiry_str=expiry_str,
+                    verbose=verbose)
     index_name = os.path.join(rootname, relpath)
     template = open(os.path.join(data_path, 'index.html.template'), 'r').read()
     with open(os.path.join(target_dir, 'index.html'), 'w') as index:
@@ -78,6 +83,7 @@ def main():
     parser.add_argument('-t', '--ttl',  help='Time for the files to live in days', type=int, default=None)
     parser.add_argument('-S', '--use-custom-style',  action='store_true', help='Use custom CSS file', default=False)
     parser.add_argument('-n', '--dry-run',  action='store_true', help='Try without transferring files', default=False)
+    parser.add_argument('-V', '--verbose',  action='store_true', help='Print verbose output', default=False)
 
     parser.add_argument('--server-domain',  help='Domain of the server (without http prefix), eg example.com')
     parser.add_argument('--server-fs-root',  help='The server root directory, ie the one corresponding to yourdomain.com/')
@@ -141,11 +147,12 @@ def main():
 
     # Make temp dir:
     with tempfile.TemporaryDirectory() as tmpdirname:
-        print('created temporary directory', tmpdirname)
+        if args.verbose:
+            print('created temporary directory', tmpdirname)
         os.chmod(tmpdirname, 0o755)
         tmppath = os.path.join(tmpdirname, '') #Add trailing slash
         rsync_local_cmd = f'rsync -raP {recurse_str} {filelist} {tmppath}'
-        rsync_local_result  = run_cmd(rsync_local_cmd)
+        rsync_local_result  = run_cmd(rsync_local_cmd, args.verbose)
 
         baseurl = config['server_protocol']+'://'+config['server_domain']+'/'+config['listing_prefix']+'/'+config['slug']
 
@@ -171,21 +178,23 @@ def main():
                 static_ref=static_ref,
                 rootname=config['slug'],
                 baseurl=baseurl,
-                expiry_str=expiry_str)
+                expiry_str=expiry_str,
+                verbose=args.verbose)
 
         # Create dir on server and transfer files over:
 
         if 'dry-run' not in config:
             mkdir_cmd = f'ssh {config["hostname"]} mkdir -p {dst_dir}'
-            mkdir_result = run_cmd(mkdir_cmd)
+            mkdir_result = run_cmd(mkdir_cmd, args.verbose)
 
         rsync_remote_cmd = f'rsync {dry_run_str} -raP {tmppath} "{config["hostname"]}:{dst_dir}"'
-        print(rsync_remote_cmd)
-        rsync_remote_result  = subprocess.run(shlex.split(rsync_remote_cmd))
+        if args.verbose:
+            print(rsync_remote_cmd)
+        rsync_remote_result = subprocess.run(shlex.split(rsync_remote_cmd), capture_output=not args.verbose)
 
         if expiry_str:
             timeout_cmd = f'ssh {config["hostname"]} at {expiry_str}'
-            timeout_result = subprocess.run(shlex.split(timeout_cmd), input=f'rm -r "{dst_dir}"', encoding='utf-8')
+            timeout_result = subprocess.run(shlex.split(timeout_cmd), capture_output=not args.verbose, input=f'rm -r "{dst_dir}"', encoding='utf-8')
 
     # Finally, output link to stdout:
     print(dst_dir)
